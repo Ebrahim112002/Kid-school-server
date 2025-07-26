@@ -339,15 +339,15 @@ async function run() {
     });
 
     await client.db('admin').command({ ping: 1 });
-    console.log('✅ Connected to MongoDB!');
+    console.log(' Connected to MongoDB!');
   } catch (err) {
-    console.error('❌ Error connecting to MongoDB:', err);
+    console.error(' Error connecting to MongoDB:', err);
   }
 }
 
 run().then(() => {
   app.listen(port, () => {
-    console.log(`🚀 Server is running on port ${port}`);
+    console.log(` Server is running on port ${port}`);
   });
 }).catch(err => {
   console.error('Failed to start server:', err);
