@@ -6,11 +6,27 @@ require('dotenv').config();
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Initialize Firebase Admin SDK
-const serviceAccount = require(process.env.FIREBASE_CREDENTIALS_PATH);
+
+// replace 
+const privateKey = process.env.FIREBASE_PRIVATE_KEY;
+
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
+  credential: admin.credential.cert({
+    type: 'service_account',
+    project_id: process.env.FIREBASE_PROJECT_ID,
+    private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+    private_key: privateKey,
+    client_email: process.env.FIREBASE_CLIENT_EMAIL,
+    client_id: process.env.FIREBASE_CLIENT_ID,
+    auth_uri: process.env.FIREBASE_AUTH_URI,
+    token_uri: process.env.FIREBASE_TOKEN_URI,
+    auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_CERT_URL,
+    client_x509_cert_url: process.env.FIREBASE_CLIENT_CERT_URL,
+    universe_domain: process.env.FIREBASE_UNIVERSE_DOMAIN,
+  }),
 });
+
+
 
 app.use(cors({ origin: 'http://localhost:5173', credentials: true }));
 app.use(express.json());
