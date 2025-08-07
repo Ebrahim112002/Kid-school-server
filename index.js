@@ -6,8 +6,6 @@ require('dotenv').config();
 const app = express();
 const port = process.env.PORT || 3000;
 
-
-// replace 
 const privateKey = process.env.FIREBASE_PRIVATE_KEY;
 
 admin.initializeApp({
@@ -26,9 +24,7 @@ admin.initializeApp({
   }),
 });
 
-
-
-app.use(cors({ origin: 'http://localhost:5173', credentials: true }));
+app.use(cors({ origin: 'https://school-project-472e4.web.app', credentials: true }));
 app.use(express.json());
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.dit9xra.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
@@ -50,6 +46,7 @@ async function run() {
     const rollUpdateCollection = client.db('studentDB').collection('studentRollUpdate');
     const ourStories = client.db('School_server').collection('student');
     const allClassSubject = client.db('School_server').collection('subject');
+    const AllTeachers = client.db('School_server').collection('Teacher');
     const classesCollection = client.db('studentDB').collection('classes');
     const pendingStudentsCollection = client.db('studentDB').collection('pendingStudents');
     const noticesCollection = client.db('studentDB').collection('notices');
@@ -272,9 +269,10 @@ async function run() {
               s.classId && typeof s.classId === 'string' && 
               s.className && typeof s.className === 'string' && 
               Array.isArray(s.subjects) && s.subjects.every(sub => typeof sub === 'string' && sub.length > 0) &&
-              s.roomNumber && typeof s.roomNumber === 'string' && s.roomNumber.length > 0
+              s.roomNumber && typeof s.roomNumber === 'string' && s.roomNumber.length > 0 &&
+              s.classTime && typeof s.classTime === 'string' && s.classTime.length > 0
             )) {
-              return res.status(400).send({ error: 'Invalid subjects provided: must be an array of objects with classId, className, non-empty subjects array, and roomNumber' });
+              return res.status(400).send({ error: 'Invalid subjects provided: must be an array of objects with classId, className, non-empty subjects array, roomNumber, and classTime' });
             }
             updateData.subjects = subjects;
 
@@ -288,11 +286,6 @@ async function run() {
               }
             }
             updateData.assignedClasses = assignedClasses;
-
-            if (!classTime || typeof classTime !== 'string' || classTime.length === 0) {
-              return res.status(400).send({ error: 'Class time is required and must be a non-empty string' });
-            }
-            updateData.classTime = classTime;
           } else {
             // Clear teacher-specific fields if not a teacher
             updateData.shift = null;
@@ -329,7 +322,7 @@ async function run() {
         res.send({
           acknowledged: result.acknowledged,
           modifiedCount: result.modifiedCount,
-          message: 'User profile updated successfully',
+          message: 'User updated successfully',
         });
       } catch (error) {
         console.error('Error updating user:', error);
@@ -341,28 +334,19 @@ async function run() {
       try {
         const email = req.params.email;
         const requesterEmail = req.headers['x-user-email'] || req.query.requesterEmail;
+
         if (!requesterEmail) {
           return res.status(401).send({ error: 'Authentication required' });
         }
-        const requester = await usersCollection.findOne({ email: requesterEmail });
-        if (!requester || requester.role !== 'admin') {
+        const user = await usersCollection.findOne({ email: requesterEmail });
+        if (!user || user.role !== 'admin') {
           return res.status(403).send({ error: 'Access denied. Admin only.' });
         }
 
-        // Delete from MongoDB
         const result = await usersCollection.deleteOne({ email });
 
         if (result.deletedCount === 0) {
           return res.status(404).send({ error: 'User not found' });
-        }
-
-        // Delete from Firebase
-        try {
-          const firebaseUser = await admin.auth().getUserByEmail(email);
-          await admin.auth().deleteUser(firebaseUser.uid);
-        } catch (firebaseError) {
-          console.error('Error deleting Firebase user:', firebaseError);
-          // Continue even if Firebase deletion fails, as MongoDB deletion succeeded
         }
 
         await studentCollection.deleteOne({ email });
@@ -378,356 +362,6 @@ async function run() {
       }
     });
 
-    app.patch('/users/remove-class/:email', async (req, res) => {
-      try {
-        const email = req.params.email;
-        const requesterEmail = req.headers['x-user-email'] || req.query.requesterEmail;
-        if (!requesterEmail) {
-          return res.status(401).send({ error: 'Authentication required' });
-        }
-        const requester = await usersCollection.findOne({ email: requesterEmail });
-        if (!requester || requester.role !== 'admin') {
-          return res.status(403).send({ error: 'Access denied. Admin only.' });
-        }
-
-        const result = await usersCollection.updateOne(
-          { email },
-          {
-            $set: {
-              role: 'user',
-              enrolledClassName: null,
-              assignedClasses: null,
-              shift: null,
-              subjects: null,
-              classTime: null,
-            },
-          }
-        );
-
-        if (result.matchedCount === 0) {
-          return res.status(404).send({ error: 'User not found' });
-        }
-
-        res.send({
-          acknowledged: result.acknowledged,
-          modifiedCount: result.modifiedCount,
-          message: 'User demoted and class assignment removed',
-        });
-      } catch (error) {
-        console.error('Error removing class:', error);
-        res.status(500).send({ error: 'Internal server error' });
-      }
-    });
-
-    // PENDING STUDENTS
-    app.post('/pendingStudents', async (req, res) => {
-      try {
-        const { name, email, dob, gender, className, stream, parentName, phone, address } = req.body;
-
-        // Validate required fields
-        if (!name || typeof name !== 'string' || name.trim().length < 2) {
-          return res.status(400).send({ error: 'Invalid or missing name: must be a string with at least 2 characters' });
-        }
-        if (!email || typeof email !== 'string' || !email.includes('@')) {
-          return res.status(400).send({ error: 'Invalid or missing email' });
-        }
-        if (!dob || isNaN(new Date(dob).getTime())) {
-          return res.status(400).send({ error: 'Invalid or missing date of birth' });
-        }
-        if (!gender || !['Male', 'Female', 'Other'].includes(gender)) {
-          return res.status(400).send({ error: 'Invalid or missing gender' });
-        }
-        if (!className || !['Play Group', 'Nursery', 'KG-1', 'KG-2', 'Class 1', 'Class 2', 'Class 3', 'Class 4', 'Class 5', 'Class 6', 'Class 7', 'Class 8', 'Class 9', 'Class 10', 'Class 11', 'Class 12'].includes(className)) {
-          return res.status(400).send({ error: 'Invalid or missing class name' });
-        }
-        if (['Class 9', 'Class 10', 'Class 11', 'Class 12'].includes(className)) {
-          if (!stream || !['Science', 'Commerce', 'Arts'].includes(stream)) {
-            return res.status(400).send({ error: 'Invalid or missing stream for Class 9-12' });
-          }
-        }
-        if (!parentName || typeof parentName !== 'string' || parentName.trim().length < 2) {
-          return res.status(400).send({ error: 'Invalid or missing parent name: must be a string with at least 2 characters' });
-        }
-        if (!phone || !/^[0-9]{11}$/.test(phone)) {
-          return res.status(400).send({ error: 'Invalid or missing phone: must be exactly 11 digits' });
-        }
-        if (!address || typeof address !== 'string' || address.trim().length < 5) {
-          return res.status(400).send({ error: 'Invalid or missing address: must be at least 5 characters' });
-        }
-
-        const newStudent = {
-          name: name.trim(),
-          email: email.trim(),
-          dob: new Date(dob),
-          gender,
-          className,
-          stream: stream || '',
-          parentName: parentName.trim(),
-          phone: phone.trim(),
-          address: address.trim(),
-          registrationNumber: Math.floor(100000 + Math.random() * 900000),
-          photoURL: '',
-          status: 'pending',
-          createdAt: new Date(),
-        };
-
-        const result = await pendingStudentsCollection.insertOne(newStudent);
-        res.status(201).send({
-          acknowledged: result.acknowledged,
-          insertedId: result.insertedId,
-          registrationNumber: newStudent.registrationNumber,
-          message: 'Admission submitted and pending approval',
-        });
-      } catch (error) {
-        console.error('Error submitting pending student:', error);
-        res.status(500).send({ error: 'Internal server error' });
-      }
-    });
-
-    app.get('/pendingStudents', async (req, res) => {
-      try {
-        const email = req.headers['x-user-email'] || req.query.email;
-        if (!email) {
-          return res.status(401).send({ error: 'Authentication required' });
-        }
-        const user = await usersCollection.findOne({ email });
-        if (!user || user.role !== 'admin') {
-          return res.status(403).send({ error: 'Access denied. Admin only.' });
-        }
-        const pendingStudents = await pendingStudentsCollection.find().toArray();
-        res.send(pendingStudents);
-      } catch (error) {
-        console.error('Error fetching pending students:', error);
-        res.status(500).send({ error: 'Internal server error' });
-      }
-    });
-
-    app.post('/pendingStudents/approve/:email', async (req, res) => {
-      try {
-        const email = req.params.email;
-        const adminEmail = req.headers['x-user-email'] || req.query.adminEmail;
-        if (!adminEmail) {
-          return res.status(401).send({ error: 'Authentication required' });
-        }
-        const admin = await usersCollection.findOne({ email: adminEmail });
-        if (!admin || admin.role !== 'admin') {
-          return res.status(403).send({ error: 'Access denied. Admin only.' });
-        }
-
-        const pendingStudent = await pendingStudentsCollection.findOne({ email });
-        if (!pendingStudent) {
-          return res.status(404).send({ error: 'Pending student not found' });
-        }
-
-        const studentData = {
-          ...pendingStudent,
-          role: 'student',
-          approvedAt: new Date(),
-        };
-        delete studentData._id;
-        delete studentData.status;
-
-        const result = await studentCollection.insertOne(studentData);
-
-        await usersCollection.updateOne(
-          { email },
-          { $set: { role: 'student', enrolledClassName: pendingStudent.className, stream: pendingStudent.stream } }
-        );
-
-        await pendingStudentsCollection.deleteOne({ email });
-
-        res.send({
-          acknowledged: result.acknowledged,
-          insertedId: result.insertedId,
-          message: 'Student approved and added to student collection',
-        });
-      } catch (error) {
-        console.error('Error approving student:', error);
-        res.status(500).send({ error: 'Internal server error' });
-      }
-    });
-
-    app.post('/pendingStudents/reject/:email', async (req, res) => {
-      try {
-        const email = req.params.email;
-        const adminEmail = req.headers['x-user-email'] || req.query.adminEmail;
-        if (!adminEmail) {
-          return res.status(401).send({ error: 'Authentication required' });
-        }
-        const admin = await usersCollection.findOne({ email: adminEmail });
-        if (!admin || admin.role !== 'admin') {
-          return res.status(403).send({ error: 'Access denied. Admin only.' });
-        }
-
-        const result = await pendingStudentsCollection.deleteOne({ email });
-        if (result.deletedCount === 0) {
-          return res.status(404).send({ error: 'Pending student not found' });
-        }
-
-        res.send({
-          acknowledged: true,
-          deletedCount: result.deletedCount,
-          message: 'Student admission rejected',
-        });
-      } catch (error) {
-        console.error('Error rejecting student:', error);
-        res.status(500).send({ error: 'Internal server error' });
-      }
-    });
-
-    // STUDENTS
-    app.get('/student/all', async (req, res) => {
-      try {
-        const requesterEmail = req.headers['x-user-email'] || req.query.requesterEmail;
-        if (!requesterEmail) {
-          return res.status(401).send({ error: 'Authentication required' });
-        }
-        const user = await usersCollection.findOne({ email: requesterEmail });
-        if (!user || user.role !== 'admin') {
-          return res.status(403).send({ error: 'Unauthorized: Only admins can view students' });
-        }
-        const students = await studentCollection.find({}).toArray();
-        res.send(students);
-      } catch (error) {
-        console.error('Error fetching students:', error);
-        res.status(500).send({ error: 'Internal server error' });
-      }
-    });
-
-    app.get('/student', async (req, res) => {
-      try {
-        const email = req.query.email;
-        if (email) {
-          const student = await studentCollection.findOne({ email });
-          const user = await usersCollection.findOne({ email });
-
-          if (!student) {
-            return res.status(404).send({ error: 'Student not found' });
-          }
-
-          if (user?.photoURL) {
-            student.photoURL = user.photoURL;
-          }
-
-          return res.send(student);
-        }
-
-        const result = await studentCollection.find().toArray();
-        res.send(result);
-      } catch (error) {
-        console.error('Error fetching students:', error);
-        res.status(500).send({ error: 'Internal server error' });
-      }
-    });
-
-    app.patch('/student/:email', async (req, res) => {
-      try {
-        const email = req.params.email;
-        const requesterEmail = req.headers['x-user-email'] || req.query.requesterEmail;
-        const { name, phone, photoURL, dob, gender, parentName, address, enrolledClassName, stream } = req.body;
-
-        const user = await usersCollection.findOne({ email: requesterEmail });
-        if (!user || (email !== requesterEmail && user.role !== 'admin')) {
-          return res.status(403).send({ error: 'Unauthorized: You can only update your own profile or admin access required' });
-        }
-
-        if (enrolledClassName) {
-          return res.status(400).send({ error: 'Updating enrolledClassName is not allowed' });
-        }
-
-        const updateData = {};
-        if (name && typeof name === 'string' && name.length >= 2) {
-          updateData.name = name;
-        }
-        if (phone && /^[0-9]{10,13}$/.test(phone)) {
-          updateData.phone = phone;
-        }
-        if (photoURL && typeof photoURL === 'string' && photoURL.match(/^https?:\/\/.*\.(?:png|jpg|jpeg|gif)$/i)) {
-          updateData.photoURL = photoURL;
-        }
-        if (dob && !isNaN(new Date(dob).getTime())) {
-          updateData.dob = new Date(dob);
-        }
-        if (gender && ['Male', 'Female', 'Other'].includes(gender)) {
-          updateData.gender = gender;
-        }
-        if (parentName && typeof parentName === 'string' && parentName.length >= 2) {
-          updateData.parentName = parentName;
-        }
-        if (address && typeof address === 'string' && address.length >= 5) {
-          updateData.address = address;
-        }
-        if (stream && ['Science', 'Commerce', 'Arts', ''].includes(stream)) {
-          updateData.stream = stream;
-        }
-
-        if (Object.keys(updateData).length === 0) {
-          return res.status(400).send({ error: 'No valid fields provided for update' });
-        }
-
-        const result = await studentCollection.updateOne(
-          { email },
-          { $set: updateData }
-        );
-
-        if (result.matchedCount === 0) {
-          return res.status(404).send({ error: 'Student not found' });
-        }
-
-        const userUpdateData = {};
-        if (updateData.name) userUpdateData.name = updateData.name;
-        if (updateData.phone) userUpdateData.phone = updateData.phone;
-        if (updateData.photoURL) userUpdateData.photoURL = updateData.photoURL;
-        if (updateData.stream) userUpdateData.stream = updateData.stream;
-        if (Object.keys(userUpdateData).length > 0) {
-          await usersCollection.updateOne(
-            { email },
-            { $set: userUpdateData }
-          );
-        }
-
-        res.send({
-          acknowledged: result.acknowledged,
-          modifiedCount: result.modifiedCount,
-          message: 'Student profile updated successfully',
-        });
-      } catch (error) {
-        console.error('Error updating student:', error);
-        res.status(500).send({ error: 'Internal server error' });
-      }
-    });
-
-    app.delete('/student', async (req, res) => {
-      try {
-        const email = req.query.email;
-        const requesterEmail = req.headers['x-user-email'] || req.query.requesterEmail;
-        if (!email || !requesterEmail) {
-          return res.status(400).send({ error: 'Email and requesterEmail required' });
-        }
-
-        const user = await usersCollection.findOne({ email: requesterEmail });
-        if (!user || user.role !== 'admin') {
-          return res.status(403).send({ error: 'Access denied. Admin only.' });
-        }
-
-        const result = await studentCollection.deleteOne({ email });
-
-        if (result.deletedCount === 0) {
-          return res.status(404).send({ error: 'Student not found' });
-        }
-
-        res.send({
-          acknowledged: true,
-          deletedCount: result.deletedCount,
-          message: 'Student removed successfully',
-        });
-      } catch (error) {
-        console.error('Error deleting student:', error);
-        res.status(500).send({ error: 'Internal server error' });
-      }
-    });
-
-    // CLASSES
     app.get('/classes', async (req, res) => {
       try {
         const requesterEmail = req.headers['x-user-email'] || req.query.requesterEmail;
@@ -768,7 +402,6 @@ async function run() {
       }
     });
 
-    // SUBJECTS
     app.get('/subjects', async (req, res) => {
       try {
         const requesterEmail = req.headers['x-user-email'] || req.query.requesterEmail;
@@ -808,7 +441,32 @@ async function run() {
       }
     });
 
-    // STORIES
+    app.get('/teacher', async (req, res) => {
+      try {
+        const teachers = await AllTeachers.find().toArray();
+        if (teachers.length === 0) {
+          return res.status(404).send({ error: 'No teachers found' });
+        }
+        res.send(teachers);
+      } catch (error) {
+        console.error('Error fetching teachers:', error);
+        res.status(500).send({ error: 'Internal server error' });
+      }
+    });
+
+    app.get('/teacher/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await AllTeachers.findOne(query);
+        if (!result) return res.status(404).send({ error: 'Teacher not found' });
+        res.send(result);
+      } catch (error) {
+        console.error('Error fetching teacher:', error);
+        res.status(500).send({ error: 'Internal server error' });
+      }
+    });
+
     app.get('/stories', async (req, res) => {
       try {
         const stories = await ourStories.find().toArray();
@@ -858,7 +516,6 @@ async function run() {
       }
     });
 
-    // NOTICES
     app.post('/notices', async (req, res) => {
       try {
         const { title, content } = req.body;
@@ -997,7 +654,6 @@ async function run() {
       }
     });
 
-    // STUDENT ROLL UPDATE
     app.post('/studentRollUpdate', async (req, res) => {
       try {
         const { name, email, oldRoll, newRoll, reason } = req.body;
@@ -1042,7 +698,6 @@ async function run() {
       }
     });
 
-    // ROOT
     app.get('/', (req, res) => {
       res.send('School server is running');
     });
